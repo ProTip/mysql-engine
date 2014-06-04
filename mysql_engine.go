@@ -4,8 +4,10 @@ package mysql_engine
 import (
 	"database/sql"
 	"fmt"
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
+	"github.com/hailiang/socks"
 	"github.com/marpaia/graphite-golang"
+	"net"
 	"regexp"
 	"strconv"
 	"strings"
@@ -37,6 +39,10 @@ type MonResult struct {
 	DB        *Database
 	KeyValues map[string]int
 	Time      int64
+}
+
+func init() {
+	mysql.RegisterDial("socks", SocksDial)
 }
 
 func ResultsToGraphite(c <-chan *MonResult, host string, port int) {
@@ -96,7 +102,7 @@ func MonDatabase(database *Database, c chan *MonResult, quit chan bool) {
 	}
 	err = db.Ping()
 	if err != nil {
-		fmt.Println("Unable to connect to database!")
+		fmt.Println("Unable to connect to database: ", err.Error())
 	}
 	ticker := time.NewTicker(5 * time.Second)
 	for {
@@ -154,4 +160,15 @@ func (mon *MonMon) AddDatabase(db *Database, c chan *MonResult) {
 func (mon *MonMon) RemoveDatabase(db *Database) {
 	mon.Checkers[db.Name] <- true
 	delete(mon.Checkers, db.Name)
+}
+
+func SocksDial(addr string) (net.Conn, error) {
+	fmt.Println("Connection to ", addr, " requested!")
+	addrParts := strings.Split(addr, ":")
+	dialSocksProxy := socks.DialSocksProxy(socks.SOCKS5, strings.Join(addrParts[:2], ":"))
+	con, err := dialSocksProxy("tcp", strings.Join(addrParts[2:4], ":"))
+	if err != nil {
+		fmt.Println(err.Error())
+	}
+	return con, err
 }
