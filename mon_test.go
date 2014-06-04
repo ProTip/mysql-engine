@@ -22,11 +22,12 @@ func TestMonAddRemove(t *testing.T) {
 
 	database := &Database{
 		KeyPrefix: "product.local.stack-rds.20",
+		KeySuffix: "status"
 		Name:      "localhost.co.nz",
 	}
 	database.AddMatchers([]string{"Innodb_pages_written"})
 	mon.AddDatabase(database, resultC)
-	time.Sleep(15 * time.Second)
+	time.Sleep(300 * time.Second)
 	mon.RemoveDatabase(database)
 	time.Sleep(5 * time.Second)
 }

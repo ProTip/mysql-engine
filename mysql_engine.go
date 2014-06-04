@@ -36,6 +36,7 @@ type DatabaseChecker struct {
 type MonResult struct {
 	DB        *Database
 	KeyValues map[string]int
+	Time      int64
 }
 
 func ResultsToGraphite(c <-chan *MonResult, host string, port int) {
@@ -54,6 +55,7 @@ func ResultsToGraphite(c <-chan *MonResult, host string, port int) {
 	}
 	for {
 		res := <-c
+	LOOP:
 		for k, v := range res.KeyValues {
 			fmt.Println(k, v)
 			graphiteKey := fmt.Sprintf("%s.%s", res.DB.KeyPrefix, strings.Replace(res.DB.Name, ".", "_", -1))
@@ -61,25 +63,40 @@ func ResultsToGraphite(c <-chan *MonResult, host string, port int) {
 				graphiteKey = fmt.Sprintf("%s.%s", graphiteKey, res.DB.KeySuffix)
 			}
 			graphiteKey = fmt.Sprintf("%s.%s", graphiteKey, strings.ToLower(k))
-			fmt.Println("Sending metric: ", graphiteKey, " ", v)
-			err := Graphite.SimpleSend(graphiteKey, strconv.Itoa(v))
+			metric := graphite.Metric{
+				Name:      graphiteKey,
+				Value:     strconv.Itoa(v),
+				Timestamp: res.Time,
+			}
+			fmt.Println("Sending metric: ", metric)
+			err := Graphite.SendMetric(metric)
 			if err != nil {
+				//Sending the metric has failed, likely due to a connection issue
+				//Attempt to reconnect and then restart sending this result
 				fmt.Println("Sending failed, attempting to reconnect")
-				err := Graphite.Connect()
-				if err != nil {
-					fmt.Println("Reconnnect failed")
+				for {
+					if err := Graphite.Connect(); err == nil {
+						break
+					}
+					fmt.Println("Graphite reconnnect failed: ", err.Error())
+					time.Sleep(5 * time.Second)
 				}
-				continue
+				goto LOOP
 			}
 		}
 	}
 }
 
 func MonDatabase(database *Database, c chan *MonResult, quit chan bool) {
-	dsn := fmt.Sprintf("%s:%s@%s(%s)/", database.User, database.Password, database.Protocol, database.Address)
+	dsn := fmt.Sprintf("%s:%s@%s(%s)/?timeout=10s", database.User, database.Password, database.Protocol, database.Address)
+	fmt.Println("Connectings to: ", dsn)
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
-		panic(err.Error())
+		fmt.Println(".")
+	}
+	err = db.Ping()
+	if err != nil {
+		fmt.Println("Unable to connect to database!")
 	}
 	ticker := time.NewTicker(5 * time.Second)
 	for {
@@ -92,12 +109,14 @@ func MonDatabase(database *Database, c chan *MonResult, quit chan bool) {
 			fmt.Println("Tick!")
 			res, err := db.Query("show status;")
 			if err != nil {
-				panic(err.Error())
+				fmt.Println("Unable query database")
+				continue
 			}
 
 			result := &MonResult{
 				KeyValues: make(map[string]int),
 				DB:        database,
+				Time:      time.Now().Unix(),
 			}
 			for res.Next() {
 				var variable_name string
