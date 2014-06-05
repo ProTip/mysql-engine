@@ -45,54 +45,6 @@ func init() {
 	mysql.RegisterDial("socks", SocksDial)
 }
 
-func ResultsToGraphite(c <-chan *MonResult, host string, port int) {
-	//Must be able to connect to graphite first or conn will be nill
-	//Con is not exported so we can't check it later
-	var Graphite *graphite.Graphite
-	for {
-		Graphite = &graphite.Graphite{Host: host, Port: port}
-		err := Graphite.Connect()
-		if err != nil {
-			fmt.Println("Unable to connect to graphite")
-			time.Sleep(2 * time.Second)
-			continue
-		}
-		break
-	}
-	for {
-		res := <-c
-	LOOP:
-		for k, v := range res.KeyValues {
-			fmt.Println(k, v)
-			graphiteKey := fmt.Sprintf("%s.%s", res.DB.KeyPrefix, strings.Replace(res.DB.Name, ".", "_", -1))
-			if res.DB.KeySuffix != "" {
-				graphiteKey = fmt.Sprintf("%s.%s", graphiteKey, res.DB.KeySuffix)
-			}
-			graphiteKey = fmt.Sprintf("%s.%s", graphiteKey, strings.ToLower(k))
-			metric := graphite.Metric{
-				Name:      graphiteKey,
-				Value:     strconv.Itoa(v),
-				Timestamp: res.Time,
-			}
-			fmt.Println("Sending metric: ", metric)
-			err := Graphite.SendMetric(metric)
-			if err != nil {
-				//Sending the metric has failed, likely due to a connection issue
-				//Attempt to reconnect and then restart sending this result
-				fmt.Println("Sending failed, attempting to reconnect")
-				for {
-					if err := Graphite.Connect(); err == nil {
-						break
-					}
-					fmt.Println("Graphite reconnnect failed: ", err.Error())
-					time.Sleep(5 * time.Second)
-				}
-				goto LOOP
-			}
-		}
-	}
-}
-
 func MonDatabase(database *Database, c chan *MonResult, quit chan bool) {
 	dsn := fmt.Sprintf("%s:%s@%s(%s)/?timeout=10s", database.User, database.Password, database.Protocol, database.Address)
 	fmt.Println("Connectings to: ", dsn)
@@ -171,4 +123,65 @@ func SocksDial(addr string) (net.Conn, error) {
 		fmt.Println(err.Error())
 	}
 	return con, err
+}
+
+func ResultsToGraphite(resultC <-chan *MonResult, host string, port int, bufferSize int) {
+	var metricC = make(chan *graphite.Metric, bufferSize)
+	go MySqlEngineResultToMetrics(resultC, metricC)
+	go MetricsToGraphite(metricC, host, port)
+}
+
+func MySqlEngineResultToMetrics(in <-chan *MonResult, out chan *graphite.Metric) {
+	for res := range in {
+		for k, v := range res.KeyValues {
+			fmt.Println(k, v)
+			graphiteKey := fmt.Sprintf("%s.%s", res.DB.KeyPrefix, strings.Replace(res.DB.Name, ".", "_", -1))
+			if res.DB.KeySuffix != "" {
+				graphiteKey = fmt.Sprintf("%s.%s", graphiteKey, res.DB.KeySuffix)
+			}
+			graphiteKey = fmt.Sprintf("%s.%s", graphiteKey, strings.ToLower(k))
+			metric := &graphite.Metric{
+				Name:      graphiteKey,
+				Value:     strconv.Itoa(v),
+				Timestamp: res.Time,
+			}
+			out <- metric
+		}
+	}
+}
+
+func MetricsToGraphite(c <-chan *graphite.Metric, host string, port int) {
+	//Must be able to connect to graphite first or conn will be nill
+	//Con is not exported so we can't check it later
+	var Graphite *graphite.Graphite
+	for {
+		Graphite = &graphite.Graphite{Host: host, Port: port}
+		err := Graphite.Connect()
+		if err != nil {
+			fmt.Println("Unable to connect to graphite")
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		break
+	}
+	for metric := range c {
+		for {
+			fmt.Println("Sending metric: ", metric)
+			err := Graphite.SendMetric(*metric)
+			if err != nil {
+				//Sending the metric has failed, likely due to a connection issue
+				//Attempt to reconnect and then restart sending this result
+				fmt.Println("Sending failed, attempting to reconnect")
+				for {
+					if err := Graphite.Connect(); err == nil {
+						break
+					}
+					fmt.Println("Graphite reconnnect failed: ", err.Error())
+					time.Sleep(5 * time.Second)
+				}
+				continue
+			}
+			break
+		}
+	}
 }
