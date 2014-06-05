@@ -22,7 +22,7 @@ func TestMonAddRemove(t *testing.T) {
 
 	database := &Database{
 		KeyPrefix: "product.local.stack-rds.20",
-		KeySuffix: "status"
+		KeySuffix: "status",
 		Name:      "localhost.co.nz",
 	}
 	database.AddMatchers([]string{"Innodb_pages_written"})
